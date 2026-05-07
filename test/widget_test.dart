@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:bhagvad_gita/main.dart';  // ← important: import your real main.dart
+import 'package:bhagavad_gita/main.dart';  // ← important: import your real main.dart
 
 void main() {
   testWidgets('App smoke test - should build without crashing', (WidgetTester tester) async {

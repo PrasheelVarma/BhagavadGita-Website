@@ -1,4 +1,4 @@
-name: bhagvad_gita
+name: bhagavad_gita
 description: A beautiful devotional app to listen to Bhagavad Gita audio
 
 publish_to: 'none'
@@ -11,23 +11,34 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  audioplayers: ^6.1.0   # good version
+  audioplayers: ^6.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  flutter_lints: ^3.0.0
+  # Package to generate App Icons
+  flutter_launcher_icons: ^0.13.1
+  # Package to generate Native Splash Screen (Fixes blank screen)
+  flutter_native_splash: ^2.3.10
+
+# 1. App Icon Configuration
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: false
+  image_path: "assets/logo.png"
+  min_sdk_android: 21
+
+# 2. Native Splash Screen Configuration
+flutter_native_splash:
+  color: "#FFFFFF" # Background color of the splash
+  image: "assets/logo.png" # The logo to show immediately
+  android_12:
+    image: "assets/logo.png"
+    icon_background_color: "#FFFFFF"
 
 flutter:
   uses-material-design: true
 
   assets:
-    - assets/               # ← includes ALL files & subfolders inside assets/
-    # OR more explicit (both ways work):
-    # - assets/logo.png
-    # - assets/audio.m4a
-    # - assets/background.png   # if you plan to use it later
-
-  # flutter_launcher_icons:   # uncomment later when you want app icon
-  #   android: true
-  #   ios: true
-  #   image_path: "assets/logo.png"
+    - assets/
