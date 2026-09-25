@@ -2,12 +2,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:bhagavad_gita/main.dart';  // ← important: import your real main.dart
+import 'package:bhagavad_gita/main.dart';
 
 void main() {
   testWidgets('App smoke test - should build without crashing', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const BhagavadGitaApp());  // ← changed from MyApp
+    await tester.pumpWidget(const BhagavadGitaApp());
 
     // Verify that the app title is present
     expect(find.text('Bhagavad Gita'), findsOneWidget);
