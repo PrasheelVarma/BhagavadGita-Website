@@ -1,4 +1,4 @@
-package com.example.bhagvad_gita
+package com.reshapel.bhagavadgita
 
 import io.flutter.embedding.android.FlutterActivity
 
