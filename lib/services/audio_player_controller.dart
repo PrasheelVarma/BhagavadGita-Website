@@ -1,8 +1,9 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
-import 'package:audioplayers/audioplayers.dart';
 
-/// Playback states for the audio player.
+import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
+
+/// Represents the current playback state of the Bhagavad Gita audio.
 enum AudioPlaybackState {
   loading,
   playing,
@@ -11,183 +12,196 @@ enum AudioPlaybackState {
   error,
 }
 
-/// Central audio controller for managing playback of a single audio track.
+/// Central controller for the single-track audio player.
 ///
-/// This class provides a production-ready interface for:
-/// - Loading audio from bundled assets
-/// - Playing, pausing, and seeking
-/// - Tracking playback state and position
-/// - Handling completion and replay
-/// - Managing resources safely
-///
-/// The controller maintains a single [AudioPlayer] instance and properly
-/// manages its lifecycle, including listener cleanup on disposal.
-class AudioPlayerController with ChangeNotifier {
+/// Responsibilities:
+/// - Load the bundled audio asset.
+/// - Play, pause, seek and restart.
+/// - Expose playback position and duration.
+/// - Track playback state.
+/// - Handle completion and errors.
+/// - Own and dispose the underlying AudioPlayer.
+class AudioPlayerController extends ChangeNotifier {
+  AudioPlayerController();
+
   final AudioPlayer _audioPlayer = AudioPlayer();
 
-  // Playback state
   AudioPlaybackState _state = AudioPlaybackState.loading;
-  
-  // Track metadata
   Duration _duration = Duration.zero;
   Duration _position = Duration.zero;
-  
-  // Track the initialized audio asset path
-  String? _audioAssetPath;
-  
-  // Track if controller has been disposed
-  bool _isDisposed = false;
-  
-  // StreamSubscription for proper cleanup
-  StreamSubscription? _durationSubscription;
-  StreamSubscription? _positionSubscription;
-  StreamSubscription? _completeSubscription;
-  StreamSubscription? _errorSubscription;
 
-  // Getters for public access
+  String? _audioAssetPath;
+
+  bool _isInitialized = false;
+  bool _isInitializing = false;
+  bool _isDisposed = false;
+  bool _operationInProgress = false;
+
+  StreamSubscription<Duration>? _durationSubscription;
+  StreamSubscription<Duration>? _positionSubscription;
+  StreamSubscription<void>? _completeSubscription;
+  StreamSubscription<String>? _errorSubscription;
+
   AudioPlaybackState get state => _state;
   Duration get duration => _duration;
   Duration get position => _position;
+
+  bool get isLoading => _state == AudioPlaybackState.loading;
   bool get isPlaying => _state == AudioPlaybackState.playing;
   bool get isPaused => _state == AudioPlaybackState.paused;
   bool get isCompleted => _state == AudioPlaybackState.completed;
-  bool get isLoading => _state == AudioPlaybackState.loading;
   bool get hasError => _state == AudioPlaybackState.error;
-  bool get isInitialized => _audioAssetPath != null;
+
+  bool get isInitialized => _isInitialized;
+  bool get isBusy => _operationInProgress;
+
   String? get audioAssetPath => _audioAssetPath;
 
-  // AudioPlayer for direct access when needed
-  AudioPlayer get player => _audioPlayer;
-
-  /// Initialize the controller with an audio asset.
+  /// Initializes the bundled audio asset.
   ///
-  /// This method:
-  /// - Sets the audio source
-  /// - Loads the duration
-  /// - Prepares the player for playback
-  ///
-  /// [audioAssetPath] is the path to the bundled asset (e.g., 'audio.m4a').
-  ///
-  /// Throws an [AudioInitializationException] if initialization fails.
+  /// Calling initialize repeatedly with the same asset is safe.
+  /// If initialization previously failed, it can be retried.
   Future<void> initialize(String audioAssetPath) async {
-    // Prevent re-initialization with a different path
     if (_isDisposed) {
-      throw AudioInitializationException('Cannot initialize: controller is disposed');
+      throw StateError('AudioPlayerController has been disposed.');
     }
-    if (_audioAssetPath != null && _audioAssetPath != audioAssetPath) {
-      throw AudioInitializationException('Cannot initialize: already initialized with a different asset');
-    }
-    
-    if (_audioAssetPath != null) {
-      // Already initialized with the same asset
+
+    if (_isInitialized && _audioAssetPath == audioAssetPath) {
       return;
     }
 
-    _audioAssetPath = audioAssetPath;
-    _state = AudioPlaybackState.loading;
-    notifyListeners();
+    if (_isInitializing) {
+      return;
+    }
+
+    _isInitializing = true;
+    _setState(AudioPlaybackState.loading);
 
     try {
-      // Set the source
-      await _audioPlayer.setSource(AssetSource(audioAssetPath));
-      
-      // Attach listeners after source is set
+      await _detachListeners();
+
+      _audioAssetPath = audioAssetPath;
+
+      await _audioPlayer.setReleaseMode(ReleaseMode.stop);
+
       _attachListeners();
-      
-      // The duration will be set via the onDurationChanged callback
-      // Wait a brief moment for duration to be populated
-      await Future.delayed(const Duration(milliseconds: 100));
-      
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.paused;
-        notifyListeners();
+
+      await _audioPlayer.setSource(
+        AssetSource(audioAssetPath),
+      );
+
+      if (_isDisposed) {
+        return;
       }
-    } catch (e, stackTrace) {
+
+      _isInitialized = true;
+      _position = Duration.zero;
+
+      _setState(AudioPlaybackState.paused);
+    } catch (error, stackTrace) {
+      _isInitialized = false;
+      _audioAssetPath = null;
+      _duration = Duration.zero;
+      _position = Duration.zero;
+
       if (!_isDisposed) {
-        _state = AudioPlaybackState.error;
-        _errorSubscription?.cancel();
-        _errorSubscription = null;
-        notifyListeners();
-        
-        debugPrint('AudioPlayerController: Initialization failed - $e');
-        debugPrint('Stack trace: $stackTrace');
-        
-        throw AudioInitializationException(
-          'Failed to initialize audio: $e',
-          originalError: e,
-          stackTrace: stackTrace,
-        );
+        _setState(AudioPlaybackState.error);
       }
+
+      debugPrint(
+        'AudioPlayerController: initialization failed: $error',
+      );
+      debugPrint('$stackTrace');
+
+      throw AudioInitializationException(
+        'Failed to initialize audio.',
+        originalError: error,
+        stackTrace: stackTrace,
+      );
+    } finally {
+      _isInitializing = false;
     }
   }
 
-  /// Start or resume playback.
+  /// Starts or resumes playback.
   ///
-  /// If the audio has been completed, this will restart from the beginning.
-  /// If already playing, this is a no-op.
+  /// If the track has completed, playback starts again from the beginning.
   Future<void> play() async {
-    if (_isDisposed) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
-    
-    if (_state == AudioPlaybackState.playing) {
+
+    if (!_isInitialized) {
       return;
     }
+
+    if (isPlaying) {
+      return;
+    }
+
+    _operationInProgress = true;
 
     try {
-      // If completed, restart from beginning
-      if (_state == AudioPlaybackState.completed) {
+      if (isCompleted) {
         await _audioPlayer.seek(Duration.zero);
+
+        if (_isDisposed) {
+          return;
+        }
+
         _position = Duration.zero;
-        notifyListeners();
       }
-      
+
       await _audioPlayer.resume();
-      
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.playing;
-        notifyListeners();
+
+      if (_isDisposed) {
+        return;
       }
-    } catch (e) {
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.error;
-        notifyListeners();
-        debugPrint('AudioPlayerController: Play failed - $e');
-      }
+
+      _setState(AudioPlaybackState.playing);
+    } catch (error, stackTrace) {
+      _handleOperationError(
+        'play',
+        error,
+        stackTrace,
+      );
+    } finally {
+      _operationInProgress = false;
     }
   }
 
-  /// Pause playback.
-  ///
-  /// If already paused or not started, this is a no-op.
+  /// Pauses playback.
   Future<void> pause() async {
-    if (_isDisposed) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
-    
-    if (_state == AudioPlaybackState.paused || 
-        _state == AudioPlaybackState.loading || 
-        _state == AudioPlaybackState.completed) {
+
+    if (!_isInitialized || !isPlaying) {
       return;
     }
+
+    _operationInProgress = true;
 
     try {
       await _audioPlayer.pause();
-      
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.paused;
-        notifyListeners();
+
+      if (_isDisposed) {
+        return;
       }
-    } catch (e) {
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.error;
-        notifyListeners();
-        debugPrint('AudioPlayerController: Pause failed - $e');
-      }
+
+      _setState(AudioPlaybackState.paused);
+    } catch (error, stackTrace) {
+      _handleOperationError(
+        'pause',
+        error,
+        stackTrace,
+      );
+    } finally {
+      _operationInProgress = false;
     }
   }
 
-  /// Toggle between play and pause.
+  /// Toggles between play and pause.
   Future<void> togglePlayPause() async {
     if (isPlaying) {
       await pause();
@@ -196,118 +210,230 @@ class AudioPlayerController with ChangeNotifier {
     }
   }
 
-  /// Seek to a specific position in the audio track.
+  /// Seeks to the requested position.
   ///
-  /// [position] is the target position in the track.
-  Future<void> seek(Duration position) async {
-    if (_isDisposed) {
+  /// The requested value is automatically clamped between zero
+  /// and the known track duration.
+  Future<void> seek(Duration requestedPosition) async {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
-    
-    if (position < Duration.zero) {
-      position = Duration.zero;
+
+    if (!_isInitialized) {
+      return;
     }
-    if (position > _duration) {
-      position = _duration;
-    }
+
+    final target = _clampPosition(requestedPosition);
+
+    _operationInProgress = true;
 
     try {
-      await _audioPlayer.seek(position);
-      
-      if (!_isDisposed) {
-        _position = position;
+      await _audioPlayer.seek(target);
+
+      if (_isDisposed) {
+        return;
+      }
+
+      _position = target;
+
+      // Seeking away from the end means the track is no longer completed.
+      if (isCompleted && target < _duration) {
+        _setState(AudioPlaybackState.paused);
+      } else {
         notifyListeners();
       }
-    } catch (e) {
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.error;
-        notifyListeners();
-        debugPrint('AudioPlayerController: Seek failed - $e');
-      }
+    } catch (error, stackTrace) {
+      _handleOperationError(
+        'seek',
+        error,
+        stackTrace,
+      );
+    } finally {
+      _operationInProgress = false;
     }
   }
 
-  /// Restart playback from the beginning.
+  /// Restarts the track from the beginning and starts playback.
   Future<void> restart() async {
-    await seek(Duration.zero);
-    await play();
-  }
-
-  /// Stop playback and reset position.
-  ///
-  /// This pauses playback and resets position to zero.
-  Future<void> stop() async {
-    if (_isDisposed) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
-    
+
+    if (!_isInitialized) {
+      return;
+    }
+
+    _operationInProgress = true;
+
+    try {
+      await _audioPlayer.seek(Duration.zero);
+
+      if (_isDisposed) {
+        return;
+      }
+
+      _position = Duration.zero;
+
+      await _audioPlayer.resume();
+
+      if (_isDisposed) {
+        return;
+      }
+
+      _setState(AudioPlaybackState.playing);
+    } catch (error, stackTrace) {
+      _handleOperationError(
+        'restart',
+        error,
+        stackTrace,
+      );
+    } finally {
+      _operationInProgress = false;
+    }
+  }
+
+  /// Stops playback and resets the position.
+  Future<void> stop() async {
+    if (!_canOperate || _operationInProgress) {
+      return;
+    }
+
+    if (!_isInitialized) {
+      return;
+    }
+
+    _operationInProgress = true;
+
     try {
       await _audioPlayer.stop();
-      
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.paused;
-        _position = Duration.zero;
-        notifyListeners();
+
+      if (_isDisposed) {
+        return;
       }
-    } catch (e) {
-      if (!_isDisposed) {
-        _state = AudioPlaybackState.error;
-        notifyListeners();
-        debugPrint('AudioPlayerController: Stop failed - $e');
-      }
+
+      _position = Duration.zero;
+      _setState(AudioPlaybackState.paused);
+    } catch (error, stackTrace) {
+      _handleOperationError(
+        'stop',
+        error,
+        stackTrace,
+      );
+    } finally {
+      _operationInProgress = false;
     }
   }
 
-  /// Attach event listeners from the audio player.
   void _attachListeners() {
-    // Duration changed - set the track duration
-    _durationSubscription = _audioPlayer.onDurationChanged.listen((duration) {
-      if (!_isDisposed && duration != null) {
-        _duration = duration;
-        notifyListeners();
+    _durationSubscription =
+        _audioPlayer.onDurationChanged.listen((duration) {
+      if (_isDisposed) {
+        return;
       }
+
+      _duration = duration;
+
+      if (_position > duration) {
+        _position = duration;
+      }
+
+      notifyListeners();
     });
 
-    // Position changed - update current position
-    _positionSubscription = _audioPlayer.onPositionChanged.listen((position) {
-      if (!_isDisposed && position != null) {
-        // Cap position at duration to prevent overshoot
-        if (position >= _duration && _duration > Duration.zero) {
-          // Handle completion
-          _handleComplete();
-        } else {
-          _position = position;
-          notifyListeners();
-        }
+    _positionSubscription =
+        _audioPlayer.onPositionChanged.listen((position) {
+      if (_isDisposed) {
+        return;
       }
+
+      _position = _clampPosition(position);
+      notifyListeners();
     });
 
-    // Player completed - track finished playing
-    _completeSubscription = _audioPlayer.onPlayerComplete.listen((_) {
-      if (!_isDisposed) {
-        _handleComplete();
+    _completeSubscription =
+        _audioPlayer.onPlayerComplete.listen((_) {
+      if (_isDisposed) {
+        return;
       }
+
+      _position = _duration;
+      _setState(AudioPlaybackState.completed);
     });
 
-    // Error handling
-    _errorSubscription = _audioPlayer.onError.listen((event) {
-      if (!_isDisposed) {
-        debugPrint('AudioPlayerController: Audio player error - $event');
-        _state = AudioPlaybackState.error;
-        notifyListeners();
+    _errorSubscription =
+        _audioPlayer.onPlayerError.listen((message) {
+      if (_isDisposed) {
+        return;
       }
+
+      debugPrint(
+        'AudioPlayerController: player error: $message',
+      );
+
+      _setState(AudioPlaybackState.error);
     });
   }
 
-  /// Handle track completion state.
-  void _handleComplete() {
-    _state = AudioPlaybackState.completed;
-    _position = _duration;
+  Future<void> _detachListeners() async {
+    await _durationSubscription?.cancel();
+    await _positionSubscription?.cancel();
+    await _completeSubscription?.cancel();
+    await _errorSubscription?.cancel();
+
+    _durationSubscription = null;
+    _positionSubscription = null;
+    _completeSubscription = null;
+    _errorSubscription = null;
+  }
+
+  Duration _clampPosition(Duration value) {
+    if (value < Duration.zero) {
+      return Duration.zero;
+    }
+
+    if (_duration > Duration.zero && value > _duration) {
+      return _duration;
+    }
+
+    return value;
+  }
+
+  bool get _canOperate => !_isDisposed;
+
+  void _setState(AudioPlaybackState state) {
+    if (_isDisposed) {
+      return;
+    }
+
+    _state = state;
     notifyListeners();
   }
 
-  /// Remove all event listeners to prevent memory leaks.
-  void _detachListeners() {
+  void _handleOperationError(
+    String operation,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    if (_isDisposed) {
+      return;
+    }
+
+    debugPrint(
+      'AudioPlayerController: $operation failed: $error',
+    );
+    debugPrint('$stackTrace');
+
+    _setState(AudioPlaybackState.error);
+  }
+
+  @override
+  void dispose() {
+    if (_isDisposed) {
+      return;
+    }
+
+    _isDisposed = true;
+
     _durationSubscription?.cancel();
     _positionSubscription?.cancel();
     _completeSubscription?.cancel();
@@ -317,63 +443,33 @@ class AudioPlayerController with ChangeNotifier {
     _positionSubscription = null;
     _completeSubscription = null;
     _errorSubscription = null;
-  }
 
-  /// Dispose all resources.
-  ///
-  /// This method:
-  /// - Stops playback
-  /// - Detaches all listeners
-  /// - Disposes the audio player
-  ///
-  /// After disposal, the controller cannot be used and will throw
-  /// [AudioInitializationException] on any method calls.
-  Future<void> dispose() async {
-    if (_isDisposed) {
-      return;
-    }
-    
-    _isDisposed = true;
-    
-    // Stop playback first
-    try {
-      await _audioPlayer.stop();
-    } catch (e) {
-      // Ignore errors during disposal
-      debugPrint('AudioPlayerController: Error stopping during dispose - $e');
-    }
+    unawaited(_audioPlayer.stop());
+    unawaited(_audioPlayer.dispose());
 
-    // Detach listeners to prevent callbacks after disposal
-    _detachListeners();
-
-    // Dispose the audio player
-    await _audioPlayer.dispose();
-    
-    debugPrint('AudioPlayerController: Disposed successfully');
-  }
-
-  @override
-  void notifyListeners() {
-    // Prevent notifications after disposal
-    if (!_isDisposed) {
-      super.notifyListeners();
-    }
+    super.dispose();
   }
 }
 
-/// Exception thrown when audio initialization fails.
+/// Thrown when the audio player cannot initialize its audio source.
 class AudioInitializationException implements Exception {
   final String message;
   final Object? originalError;
   final StackTrace? stackTrace;
 
-  AudioInitializationException(this.message, {this.originalError, this.stackTrace});
+  const AudioInitializationException(
+    this.message, {
+    this.originalError,
+    this.stackTrace,
+  });
 
   @override
   String toString() {
-    if (originalError != null && stackTrace != null) {
-      return 'AudioInitializationException: $message\nOriginal error: $originalError\n$stackTrace';
+    if (originalError == null) {
+      return 'AudioInitializationException: $message';
     }
-    return 'AudioInitializationException: $message';
+
+    return 'AudioInitializationException: $message '
+        'Original error: $originalError';
   }
 }
