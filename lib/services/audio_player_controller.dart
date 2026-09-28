@@ -37,6 +37,9 @@ class AudioPlayerController extends ChangeNotifier {
   bool _isDisposed = false;
   bool _operationInProgress = false;
 
+  // Track seek target to prevent position listener override
+  Duration? _pendingSeekTarget;
+
   StreamSubscription<Duration>? _durationSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<void>? _completeSubscription;
@@ -54,8 +57,22 @@ class AudioPlayerController extends ChangeNotifier {
 
   bool get isInitialized => _isInitialized;
   bool get isBusy => _operationInProgress;
+  bool get canRestart => isCompleted;
 
   String? get audioAssetPath => _audioAssetPath;
+
+  /// Resets the controller to a clean state.
+  ///
+  /// This clears error state and resets internal flags
+  /// without disposing the controller.
+  void reset() {
+    _isInitialized = false;
+    _audioAssetPath = null;
+    _duration = Duration.zero;
+    _position = Duration.zero;
+    _pendingSeekTarget = null;
+    _operationInProgress = false;
+  }
 
   /// Initializes the bundled audio asset.
   ///
@@ -70,17 +87,25 @@ class AudioPlayerController extends ChangeNotifier {
       return;
     }
 
+    // If already initializing, wait for completion
     if (_isInitializing) {
       return;
     }
 
+    // If in error state, reset before retrying
+    if (hasError && _audioAssetPath == audioAssetPath) {
+      reset();
+    }
+
     _isInitializing = true;
+    _operationInProgress = true;
     _setState(AudioPlaybackState.loading);
 
     try {
       await _detachListeners();
 
       _audioAssetPath = audioAssetPath;
+      _pendingSeekTarget = null;
 
       await _audioPlayer.setReleaseMode(ReleaseMode.stop);
 
@@ -103,6 +128,8 @@ class AudioPlayerController extends ChangeNotifier {
       _audioAssetPath = null;
       _duration = Duration.zero;
       _position = Duration.zero;
+      _pendingSeekTarget = null;
+      _operationInProgress = false;
 
       if (!_isDisposed) {
         _setState(AudioPlaybackState.error);
@@ -120,6 +147,7 @@ class AudioPlayerController extends ChangeNotifier {
       );
     } finally {
       _isInitializing = false;
+      _operationInProgress = false;
     }
   }
 
@@ -127,29 +155,36 @@ class AudioPlayerController extends ChangeNotifier {
   ///
   /// If the track has completed, playback starts again from the beginning.
   Future<void> play() async {
-    if (!_canOperate || _operationInProgress) {
+    if (!_canOperate) {
       return;
     }
 
-    if (!_isInitialized) {
+    // Don't start if not initialized or in error state
+    if (!_isInitialized || hasError) {
       return;
     }
 
+    // If already playing, nothing to do
     if (isPlaying) {
+      return;
+    }
+
+    // If loading, wait for initialization
+    if (isLoading) {
       return;
     }
 
     _operationInProgress = true;
 
     try {
+      // If completed, restart from beginning
       if (isCompleted) {
         await _audioPlayer.seek(Duration.zero);
-
         if (_isDisposed) {
           return;
         }
-
         _position = Duration.zero;
+        _pendingSeekTarget = null;
       }
 
       await _audioPlayer.resume();
@@ -160,11 +195,7 @@ class AudioPlayerController extends ChangeNotifier {
 
       _setState(AudioPlaybackState.playing);
     } catch (error, stackTrace) {
-      _handleOperationError(
-        'play',
-        error,
-        stackTrace,
-      );
+      _handleOperationError('play', error, stackTrace);
     } finally {
       _operationInProgress = false;
     }
@@ -172,11 +203,12 @@ class AudioPlayerController extends ChangeNotifier {
 
   /// Pauses playback.
   Future<void> pause() async {
-    if (!_canOperate || _operationInProgress) {
+    if (!_canOperate) {
       return;
     }
 
-    if (!_isInitialized || !isPlaying) {
+    // If not initialized, in error state, or not playing, nothing to do
+    if (!_isInitialized || hasError || !isPlaying) {
       return;
     }
 
@@ -191,11 +223,7 @@ class AudioPlayerController extends ChangeNotifier {
 
       _setState(AudioPlaybackState.paused);
     } catch (error, stackTrace) {
-      _handleOperationError(
-        'pause',
-        error,
-        stackTrace,
-      );
+      _handleOperationError('pause', error, stackTrace);
     } finally {
       _operationInProgress = false;
     }
@@ -215,15 +243,22 @@ class AudioPlayerController extends ChangeNotifier {
   /// The requested value is automatically clamped between zero
   /// and the known track duration.
   Future<void> seek(Duration requestedPosition) async {
-    if (!_canOperate || _operationInProgress) {
+    if (!_canOperate) {
       return;
     }
 
-    if (!_isInitialized) {
+    // Don't seek if not initialized or in error state
+    if (!_isInitialized || hasError) {
+      return;
+    }
+
+    // Don't seek while loading
+    if (isLoading) {
       return;
     }
 
     final target = _clampPosition(requestedPosition);
+    _pendingSeekTarget = target;
 
     _operationInProgress = true;
 
@@ -235,6 +270,7 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = target;
+      _pendingSeekTarget = null;
 
       // Seeking away from the end means the track is no longer completed.
       if (isCompleted && target < _duration) {
@@ -243,23 +279,22 @@ class AudioPlayerController extends ChangeNotifier {
         notifyListeners();
       }
     } catch (error, stackTrace) {
-      _handleOperationError(
-        'seek',
-        error,
-        stackTrace,
-      );
+      _handleOperationError('seek', error, stackTrace);
     } finally {
       _operationInProgress = false;
     }
   }
 
   /// Restarts the track from the beginning and starts playback.
+  ///
+  /// This is useful when the track has completed and the user wants to replay.
   Future<void> restart() async {
-    if (!_canOperate || _operationInProgress) {
+    if (!_canOperate) {
       return;
     }
 
-    if (!_isInitialized) {
+    // Don't restart if not initialized, in error state, or not completed
+    if (!_isInitialized || hasError || !isCompleted) {
       return;
     }
 
@@ -273,6 +308,7 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = Duration.zero;
+      _pendingSeekTarget = null;
 
       await _audioPlayer.resume();
 
@@ -282,11 +318,7 @@ class AudioPlayerController extends ChangeNotifier {
 
       _setState(AudioPlaybackState.playing);
     } catch (error, stackTrace) {
-      _handleOperationError(
-        'restart',
-        error,
-        stackTrace,
-      );
+      _handleOperationError('restart', error, stackTrace);
     } finally {
       _operationInProgress = false;
     }
@@ -294,11 +326,12 @@ class AudioPlayerController extends ChangeNotifier {
 
   /// Stops playback and resets the position.
   Future<void> stop() async {
-    if (!_canOperate || _operationInProgress) {
+    if (!_canOperate) {
       return;
     }
 
-    if (!_isInitialized) {
+    // Don't stop if not initialized or in error state
+    if (!_isInitialized || hasError) {
       return;
     }
 
@@ -312,16 +345,25 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = Duration.zero;
+      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.paused);
     } catch (error, stackTrace) {
-      _handleOperationError(
-        'stop',
-        error,
-        stackTrace,
-      );
+      _handleOperationError('stop', error, stackTrace);
     } finally {
       _operationInProgress = false;
     }
+  }
+
+  /// Attempts to recover from an error state.
+  ///
+  /// This resets the controller to allow re-initialization.
+  /// Returns true if recovery was successful.
+  bool tryRecover() {
+    if (!_isDisposed && hasError) {
+      reset();
+      return true;
+    }
+    return false;
   }
 
   void _attachListeners() {
@@ -333,8 +375,15 @@ class AudioPlayerController extends ChangeNotifier {
 
       _duration = duration;
 
+      // Clamp current position to new duration
       if (_position > duration) {
         _position = duration;
+      }
+
+      // If we have a pending seek, use that as the position
+      if (_pendingSeekTarget != null) {
+        _position = _pendingSeekTarget!;
+        _pendingSeekTarget = null;
       }
 
       notifyListeners();
@@ -343,6 +392,11 @@ class AudioPlayerController extends ChangeNotifier {
     _positionSubscription =
         _audioPlayer.onPositionChanged.listen((position) {
       if (_isDisposed) {
+        return;
+      }
+
+      // If we have a pending seek, don't update position
+      if (_pendingSeekTarget != null) {
         return;
       }
 
@@ -357,6 +411,7 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = _duration;
+      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.completed);
     });
 
@@ -370,6 +425,8 @@ class AudioPlayerController extends ChangeNotifier {
         'AudioPlayerController: player error: $message',
       );
 
+      _operationInProgress = false;
+      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.error);
     });
   }
@@ -423,6 +480,8 @@ class AudioPlayerController extends ChangeNotifier {
     );
     debugPrint('$stackTrace');
 
+    _operationInProgress = false;
+    _pendingSeekTarget = null;
     _setState(AudioPlaybackState.error);
   }
 
@@ -433,6 +492,8 @@ class AudioPlayerController extends ChangeNotifier {
     }
 
     _isDisposed = true;
+    _operationInProgress = false;
+    _pendingSeekTarget = null;
 
     _durationSubscription?.cancel();
     _positionSubscription?.cancel();
@@ -444,8 +505,12 @@ class AudioPlayerController extends ChangeNotifier {
     _completeSubscription = null;
     _errorSubscription = null;
 
-    unawaited(_audioPlayer.stop());
-    unawaited(_audioPlayer.dispose());
+    // Await the stop to ensure clean shutdown
+    unawaited(_audioPlayer.stop().then((_) {
+      return _audioPlayer.dispose();
+    }).onError((error, stackTrace) {
+      debugPrint('AudioPlayerController: error during dispose: $error');
+    }));
 
     super.dispose();
   }

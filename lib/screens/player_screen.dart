@@ -122,6 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
                   const SizedBox(height: 48),
 
+                  // Slider - always enabled except during loading
                   Slider(
                     value: _sliderValue,
                     min: 0,
@@ -130,8 +131,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             .toDouble()
                         : 1,
                     onChanged: _controller.isInitialized &&
-                            !_controller.isLoading &&
-                            !_controller.hasError
+                            !_controller.isLoading
                         ? (value) {
                             setState(() {
                               // Visual slider update while dragging.
@@ -139,8 +139,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           }
                         : null,
                     onChangeEnd: _controller.isInitialized &&
-                            !_controller.isLoading &&
-                            !_controller.hasError
+                            !_controller.isLoading
                         ? (value) {
                             _controller.seek(
                               Duration(
@@ -199,20 +198,27 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
 
     if (_controller.hasError) {
+      // Show recovery button for recoverable errors
       return ElevatedButton.icon(
-        onPressed: null,
+        onPressed: () {
+          // Try to recover from error
+          _controller.tryRecover();
+        },
         icon: const Icon(
-          Icons.error_rounded,
+          Icons.refresh_rounded,
           size: 24,
         ),
-        label: const Text('Playback Error'),
+        label: const Text('Retry'),
         style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.orange.shade300,
+          foregroundColor: Colors.white,
           minimumSize: const Size(180, 60),
         ),
       );
     }
 
     if (_controller.isCompleted) {
+      // Only show replay button if not busy
       return ElevatedButton.icon(
         onPressed: _controller.isBusy
             ? null
@@ -228,6 +234,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     }
 
+    // Normal play/pause - disable only if busy
     return ElevatedButton.icon(
       onPressed: _controller.isBusy
           ? null
