@@ -200,9 +200,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (_controller.hasError) {
       // Show recovery button for recoverable errors
       return ElevatedButton.icon(
-        onPressed: () {
+        onPressed: () async {
           // Try to recover from error
-          _controller.tryRecover();
+          await _controller.tryRecover();
         },
         icon: const Icon(
           Icons.refresh_rounded,

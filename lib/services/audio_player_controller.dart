@@ -37,9 +37,6 @@ class AudioPlayerController extends ChangeNotifier {
   bool _isDisposed = false;
   bool _operationInProgress = false;
 
-  // Track seek target to prevent position listener override
-  Duration? _pendingSeekTarget;
-
   StreamSubscription<Duration>? _durationSubscription;
   StreamSubscription<Duration>? _positionSubscription;
   StreamSubscription<void>? _completeSubscription;
@@ -64,14 +61,15 @@ class AudioPlayerController extends ChangeNotifier {
   /// Resets the controller to a clean state.
   ///
   /// This clears error state and resets internal flags
-  /// without disposing the controller.
+  /// without disposing the controller. The audio asset path
+  /// is preserved so recovery can reinitialize with the same asset.
   void reset() {
     _isInitialized = false;
-    _audioAssetPath = null;
+    // Preserve _audioAssetPath for recovery
     _duration = Duration.zero;
     _position = Duration.zero;
-    _pendingSeekTarget = null;
     _operationInProgress = false;
+    _state = AudioPlaybackState.loading;
   }
 
   /// Initializes the bundled audio asset.
@@ -105,7 +103,6 @@ class AudioPlayerController extends ChangeNotifier {
       await _detachListeners();
 
       _audioAssetPath = audioAssetPath;
-      _pendingSeekTarget = null;
 
       await _audioPlayer.setReleaseMode(ReleaseMode.stop);
 
@@ -128,7 +125,6 @@ class AudioPlayerController extends ChangeNotifier {
       _audioAssetPath = null;
       _duration = Duration.zero;
       _position = Duration.zero;
-      _pendingSeekTarget = null;
       _operationInProgress = false;
 
       if (!_isDisposed) {
@@ -184,7 +180,6 @@ class AudioPlayerController extends ChangeNotifier {
           return;
         }
         _position = Duration.zero;
-        _pendingSeekTarget = null;
       }
 
       await _audioPlayer.resume();
@@ -258,7 +253,6 @@ class AudioPlayerController extends ChangeNotifier {
     }
 
     final target = _clampPosition(requestedPosition);
-    _pendingSeekTarget = target;
 
     _operationInProgress = true;
 
@@ -270,7 +264,6 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = target;
-      _pendingSeekTarget = null;
 
       // Seeking away from the end means the track is no longer completed.
       if (isCompleted && target < _duration) {
@@ -308,7 +301,6 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = Duration.zero;
-      _pendingSeekTarget = null;
 
       await _audioPlayer.resume();
 
@@ -345,7 +337,6 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = Duration.zero;
-      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.paused);
     } catch (error, stackTrace) {
       _handleOperationError('stop', error, stackTrace);
@@ -354,14 +345,25 @@ class AudioPlayerController extends ChangeNotifier {
     }
   }
 
-  /// Attempts to recover from an error state.
+  /// Attempts to recover from an error state by reinitializing
+  /// the previously configured audio asset.
   ///
-  /// This resets the controller to allow re-initialization.
-  /// Returns true if recovery was successful.
-  bool tryRecover() {
-    if (!_isDisposed && hasError) {
+  /// Returns true if recovery was started successfully.
+  /// The recovery process is asynchronous - the controller will
+  /// transition through loading state during recovery.
+  Future<bool> tryRecover() async {
+    if (!_isDisposed && hasError && _audioAssetPath != null) {
       reset();
-      return true;
+      try {
+        await initialize(_audioAssetPath!);
+        return true;
+      } on AudioInitializationException {
+        // Initialization failed, stay in error state
+        return false;
+      } catch (e) {
+        // Unexpected error, stay in error state
+        return false;
+      }
     }
     return false;
   }
@@ -380,23 +382,12 @@ class AudioPlayerController extends ChangeNotifier {
         _position = duration;
       }
 
-      // If we have a pending seek, use that as the position
-      if (_pendingSeekTarget != null) {
-        _position = _pendingSeekTarget!;
-        _pendingSeekTarget = null;
-      }
-
       notifyListeners();
     });
 
     _positionSubscription =
         _audioPlayer.onPositionChanged.listen((position) {
       if (_isDisposed) {
-        return;
-      }
-
-      // If we have a pending seek, don't update position
-      if (_pendingSeekTarget != null) {
         return;
       }
 
@@ -411,7 +402,6 @@ class AudioPlayerController extends ChangeNotifier {
       }
 
       _position = _duration;
-      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.completed);
     });
 
@@ -426,7 +416,6 @@ class AudioPlayerController extends ChangeNotifier {
       );
 
       _operationInProgress = false;
-      _pendingSeekTarget = null;
       _setState(AudioPlaybackState.error);
     });
   }
@@ -481,7 +470,6 @@ class AudioPlayerController extends ChangeNotifier {
     debugPrint('$stackTrace');
 
     _operationInProgress = false;
-    _pendingSeekTarget = null;
     _setState(AudioPlaybackState.error);
   }
 
@@ -493,7 +481,6 @@ class AudioPlayerController extends ChangeNotifier {
 
     _isDisposed = true;
     _operationInProgress = false;
-    _pendingSeekTarget = null;
 
     _durationSubscription?.cancel();
     _positionSubscription?.cancel();
