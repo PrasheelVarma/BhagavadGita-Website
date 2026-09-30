@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Required on API 28+ to call startForeground(). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <!-- Required on API 34+ for foreground services of type mediaPlayback. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <application
         android:label="Bhagavad Gita"
         android:name="${applicationName}"
@@ -31,6 +35,19 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!--
+            Foreground service that keeps the audio thread alive when the app
+            is backgrounded or the screen is locked.
+            foregroundServiceType="mediaPlayback" is required on Android 10+
+            (API 29+) for media-playback foreground services.
+            GITA-8 will add the media notification; for now the service posts
+            a minimal silent notification so the OS does not kill it.
+        -->
+        <service
+            android:name=".BackgroundAudioService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

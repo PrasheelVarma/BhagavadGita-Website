@@ -106,6 +106,24 @@ class AudioPlayerController extends ChangeNotifier {
 
       await _audioPlayer.setReleaseMode(ReleaseMode.stop);
 
+      // Configure Android audio context for background playback:
+      //   stayAwake     – keeps the CPU/audio thread alive when the screen
+      //                   locks or the app is backgrounded.
+      //   gain          – requests long-form audio focus; tells Android this
+      //                   is music that should be the sole audio source.
+      //   music / media – correctly classifies the stream for the OS so it
+      //                   routes through the media volume rail.
+      await _audioPlayer.setAudioContext(
+        AudioContext(
+          android: const AudioContextAndroid(
+            stayAwake: true,
+            audioFocus: AndroidAudioFocus.gain,
+            contentType: AndroidContentType.music,
+            usageType: AndroidUsageType.media,
+          ),
+        ),
+      );
+
       _attachListeners();
 
       await _audioPlayer.setSource(
