@@ -37,19 +37,10 @@
             android:value="2" />
 
         <!--
-            MediaSessionService that handles background audio playback with
-            proper Android media notifications and lock-screen controls.
-            GITA-8 replaces the minimal service from GITA-7 with full
-            MediaSession integration.
+            just_audio_background automatically manages the foreground service
+            and media notification. No manual service declaration needed.
+            GITA-8 uses just_audio_background for media session integration.
         -->
-        <service
-            android:name=".BackgroundAudioService"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="androidx.media3.session.MediaSessionService" />
-            </intent-filter>
-        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

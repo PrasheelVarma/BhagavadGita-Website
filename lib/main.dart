@@ -1,11 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:just_audio_background/just_audio_background.dart';
 
 import 'package:bhagavad_gita/screens/player_screen.dart';
 import 'package:bhagavad_gita/screens/splash_screen.dart';
 import 'package:bhagavad_gita/services/audio_player_controller.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialize just_audio_background for media notification and session support.
+  // This must be called before runApp() to properly set up the media session.
+  await JustAudioBackground.init(
+    androidNotificationChannelId: 'com.reshapel.bhagavadgita.channel.audio',
+    androidNotificationChannelName: 'Bhagavad Gita Playback',
+    androidNotificationOngoing: true,
+  );
   runApp(const BhagavadGitaApp());
 }
 
