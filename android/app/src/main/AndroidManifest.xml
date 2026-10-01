@@ -37,17 +37,19 @@
             android:value="2" />
 
         <!--
-            Foreground service that keeps the audio thread alive when the app
-            is backgrounded or the screen is locked.
-            foregroundServiceType="mediaPlayback" is required on Android 10+
-            (API 29+) for media-playback foreground services.
-            GITA-8 will add the media notification; for now the service posts
-            a minimal silent notification so the OS does not kill it.
+            MediaSessionService that handles background audio playback with
+            proper Android media notifications and lock-screen controls.
+            GITA-8 replaces the minimal service from GITA-7 with full
+            MediaSession integration.
         -->
         <service
             android:name=".BackgroundAudioService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

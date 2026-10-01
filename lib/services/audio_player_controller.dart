@@ -1,6 +1,4 @@
-import 'dart:async';
-
-import 'package:audioplayers/audioplayers.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:flutter/foundation.dart';
 
 /// Represents the current playback state of the Bhagavad Gita audio.
@@ -37,10 +35,11 @@ class AudioPlayerController extends ChangeNotifier {
   bool _isDisposed = false;
   bool _operationInProgress = false;
 
-  StreamSubscription<Duration>? _durationSubscription;
-  StreamSubscription<Duration>? _positionSubscription;
-  StreamSubscription<void>? _completeSubscription;
-  StreamSubscription<String>? _errorSubscription;
+  // Stream subscriptions for cleanup
+  StreamSubscription? _durationSubscription;
+  StreamSubscription? _positionSubscription;
+  StreamSubscription? _playerStateSubscription;
+  StreamSubscription? _errorSubscription;
 
   AudioPlaybackState get state => _state;
   Duration get duration => _duration;
@@ -104,30 +103,10 @@ class AudioPlayerController extends ChangeNotifier {
 
       _audioAssetPath = audioAssetPath;
 
-      await _audioPlayer.setReleaseMode(ReleaseMode.stop);
-
-      // Configure Android audio context for background playback:
-      //   stayAwake     – keeps the CPU/audio thread alive when the screen
-      //                   locks or the app is backgrounded.
-      //   gain          – requests long-form audio focus; tells Android this
-      //                   is music that should be the sole audio source.
-      //   music / media – correctly classifies the stream for the OS so it
-      //                   routes through the media volume rail.
-      await _audioPlayer.setAudioContext(
-        AudioContext(
-          android: const AudioContextAndroid(
-            stayAwake: true,
-            audioFocus: AndroidAudioFocus.gain,
-            contentType: AndroidContentType.music,
-            usageType: AndroidUsageType.media,
-          ),
-        ),
-      );
-
-      _attachListeners();
-
-      await _audioPlayer.setSource(
+      // Use AssetSource for bundled assets
+      await _audioPlayer.setAudioSource(
         AssetSource(audioAssetPath),
+        initialPosition: Duration.zero,
       );
 
       if (_isDisposed) {
@@ -169,7 +148,7 @@ class AudioPlayerController extends ChangeNotifier {
   ///
   /// If the track has completed, playback starts again from the beginning.
   Future<void> play() async {
-    if (!_canOperate) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
 
@@ -180,11 +159,6 @@ class AudioPlayerController extends ChangeNotifier {
 
     // If already playing, nothing to do
     if (isPlaying) {
-      return;
-    }
-
-    // If loading, wait for initialization
-    if (isLoading) {
       return;
     }
 
@@ -200,7 +174,7 @@ class AudioPlayerController extends ChangeNotifier {
         _position = Duration.zero;
       }
 
-      await _audioPlayer.resume();
+      await _audioPlayer.play();
 
       if (_isDisposed) {
         return;
@@ -216,7 +190,7 @@ class AudioPlayerController extends ChangeNotifier {
 
   /// Pauses playback.
   Future<void> pause() async {
-    if (!_canOperate) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
 
@@ -256,7 +230,7 @@ class AudioPlayerController extends ChangeNotifier {
   /// The requested value is automatically clamped between zero
   /// and the known track duration.
   Future<void> seek(Duration requestedPosition) async {
-    if (!_canOperate) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
 
@@ -300,7 +274,7 @@ class AudioPlayerController extends ChangeNotifier {
   ///
   /// This is useful when the track has completed and the user wants to replay.
   Future<void> restart() async {
-    if (!_canOperate) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
 
@@ -320,7 +294,7 @@ class AudioPlayerController extends ChangeNotifier {
 
       _position = Duration.zero;
 
-      await _audioPlayer.resume();
+      await _audioPlayer.play();
 
       if (_isDisposed) {
         return;
@@ -336,7 +310,7 @@ class AudioPlayerController extends ChangeNotifier {
 
   /// Stops playback and resets the position.
   Future<void> stop() async {
-    if (!_canOperate) {
+    if (!_canOperate || _operationInProgress) {
       return;
     }
 
@@ -387,11 +361,9 @@ class AudioPlayerController extends ChangeNotifier {
   }
 
   void _attachListeners() {
-    _durationSubscription =
-        _audioPlayer.onDurationChanged.listen((duration) {
-      if (_isDisposed) {
-        return;
-      }
+    // Duration changed
+    _durationSubscription = _audioPlayer.durationStream.listen((duration) {
+      if (_isDisposed || duration == null) return;
 
       _duration = duration;
 
@@ -403,35 +375,57 @@ class AudioPlayerController extends ChangeNotifier {
       notifyListeners();
     });
 
-    _positionSubscription =
-        _audioPlayer.onPositionChanged.listen((position) {
-      if (_isDisposed) {
-        return;
-      }
+    // Position changed
+    _positionSubscription = _audioPlayer.positionStream.listen((position) {
+      if (_isDisposed) return;
 
       _position = _clampPosition(position);
       notifyListeners();
     });
 
-    _completeSubscription =
-        _audioPlayer.onPlayerComplete.listen((_) {
-      if (_isDisposed) {
-        return;
-      }
+    // Player state changed
+    _playerStateSubscription = _audioPlayer.playerStateStream.listen((playerState) {
+      if (_isDisposed) return;
 
-      _position = _duration;
-      _setState(AudioPlaybackState.completed);
+      // Determine our state from playerState
+      final processingState = playerState.processingState;
+      final playing = playerState.playing;
+
+      if (processingState == ProcessingState.loading ||
+          processingState == ProcessingState.buffering) {
+        if (_state != AudioPlaybackState.loading) {
+          _setState(AudioPlaybackState.loading);
+        }
+      } else if (processingState == ProcessingState.completed) {
+        _position = _duration;
+        _setState(AudioPlaybackState.completed);
+      } else if (playing) {
+        _setState(AudioPlaybackState.playing);
+      } else {
+        _setState(AudioPlaybackState.paused);
+      }
     });
 
-    _errorSubscription =
-        _audioPlayer.onPlayerError.listen((message) {
-      if (_isDisposed) {
-        return;
+    // Error handling
+    _errorSubscription = _audioPlayer.playerStateStream.listen((playerState) {
+      if (_isDisposed) return;
+
+      final error = playerState.playbackError;
+      if (error != null) {
+        debugPrint(
+          'AudioPlayerController: player error: $error',
+        );
+
+        _operationInProgress = false;
+        _setState(AudioPlaybackState.error);
       }
+    }, onError: (error, stackTrace) {
+      if (_isDisposed) return;
 
       debugPrint(
-        'AudioPlayerController: player error: $message',
+        'AudioPlayerController: player error stream error: $error',
       );
+      debugPrint('$stackTrace');
 
       _operationInProgress = false;
       _setState(AudioPlaybackState.error);
@@ -441,12 +435,12 @@ class AudioPlayerController extends ChangeNotifier {
   Future<void> _detachListeners() async {
     await _durationSubscription?.cancel();
     await _positionSubscription?.cancel();
-    await _completeSubscription?.cancel();
+    await _playerStateSubscription?.cancel();
     await _errorSubscription?.cancel();
 
     _durationSubscription = null;
     _positionSubscription = null;
-    _completeSubscription = null;
+    _playerStateSubscription = null;
     _errorSubscription = null;
   }
 
@@ -502,20 +496,15 @@ class AudioPlayerController extends ChangeNotifier {
 
     _durationSubscription?.cancel();
     _positionSubscription?.cancel();
-    _completeSubscription?.cancel();
+    _playerStateSubscription?.cancel();
     _errorSubscription?.cancel();
 
     _durationSubscription = null;
     _positionSubscription = null;
-    _completeSubscription = null;
+    _playerStateSubscription = null;
     _errorSubscription = null;
 
-    // Await the stop to ensure clean shutdown
-    unawaited(_audioPlayer.stop().then((_) {
-      return _audioPlayer.dispose();
-    }).onError((error, stackTrace) {
-      debugPrint('AudioPlayerController: error during dispose: $error');
-    }));
+    unawaited(_audioPlayer.dispose());
 
     super.dispose();
   }
